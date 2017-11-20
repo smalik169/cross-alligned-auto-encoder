@@ -30,7 +30,7 @@ parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
                     help='upper epoch limit')
-parser.add_argument('--batch_size', type=int, default=20, metavar='N',
+parser.add_argument('--batch_size', type=int, default=64, metavar='N',
                     help='batch size')
 parser.add_argument('--optimizer', default='sgd',
                     choices=['sgd', 'adam', 'adagrad', 'adadelta'],
@@ -128,14 +128,14 @@ def optimizer_step(rec_loss, adv_loss0, adv_loss1):
     # RNNs / LSTMs.
     ae_optimizer.zero_grad()
     (rec_loss - model.lmb * (adv_loss0 + adv_loss1)).backward(retain_graph=True)
-    torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+#    torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
     ae_optimizer.step()
     
     discriminator_optimizer.zero_grad()
     (adv_loss0 + adv_loss1).backward()
-    torch.nn.utils.clip_grad_norm(
-            (param for D in model.discriminator for param in D.parameters()), 
-            args.clip)
+#    torch.nn.utils.clip_grad_norm(
+#            (param for D in model.discriminator for param in D.parameters()), 
+#            args.clip)
     discriminator_optimizer.step()
 
 
@@ -151,26 +151,25 @@ try:
             corpus.valid.iter_epoch(
                 eval_batch_size, evaluation=True))
         # Save the model if the validation loss is the best we've seen so far.
-        if model.save_best:
-            if not best_val_loss or val_loss['total_ae_loss'] < best_val_loss:
-                with open("./model_ae.pt", 'wb') as f:
-                    torch.save(model.state_dict(), f)
-                with open("./model_adv0.pt", 'wb') as f:
-                    torch.save(model.discriminator[0].state_dict(), f)
-                with open("./model_adv1.pt", 'wb') as f:
-                    torch.save(model.discriminator[1].state_dict(), f)
-                
-                #logger.save_model_state_dict(model.state_dict())
-                #logger.save_model(model)
-                best_val_loss = val_loss['total_ae_loss']
-            else:
-                continue
-                # Anneal the learning rate if no improvement has been seen on
-                # the validation dataset.
-                if args.lr_decay:
-                    assert len(optimizer.param_groups) == 1
-                    optimizer.param_groups[0]['lr'] /= args.lr_decay
-#                    logger.lr = optimizer.param_groups[0]['lr']
+        if not best_val_loss or val_loss['total_ae_loss'] < best_val_loss:
+            with open("./model_ae.pt", 'wb') as f:
+                torch.save(model.state_dict(), f)
+            with open("./model_adv0.pt", 'wb') as f:
+                torch.save(model.discriminator[0].state_dict(), f)
+            with open("./model_adv1.pt", 'wb') as f:
+                torch.save(model.discriminator[1].state_dict(), f)
+            
+            #logger.save_model_state_dict(model.state_dict())
+            #logger.save_model(model)
+            best_val_loss = val_loss['total_ae_loss']
+        else:
+            continue
+            # Anneal the learning rate if no improvement has been seen on
+            # the validation dataset.
+            if args.lr_decay:
+                assert len(optimizer.param_groups) == 1
+                optimizer.param_groups[0]['lr'] /= args.lr_decay
+#                logger.lr = optimizer.param_groups[0]['lr']
 except KeyboardInterrupt:
     print('-' * 89)
     print('Exiting from training early')
@@ -180,13 +179,13 @@ except KeyboardInterrupt:
 #model.load_state_dict(logger.load_model_state_dict())
 
 with open("./model_ae.pt", 'wb') as f:
-    model.load_model_state_dict(torch.load(f))
+    model.load_state_dict(torch.load(f))
 with open("./model_adv0.pt", 'wb') as f:
-    model.discriminator[0].load_model_state_dict(torch.load(f))
+    model.discriminator[0].load_state_dict(torch.load(f))
 with open("./model_adv1.pt", 'wb') as f:
-    model.discriminator[1].load_model_state_dict(torch.load(f))
-# Run on all data
+    model.discriminator[1].load_state_dict(torch.load(f))
 
+# Run on all data
 train_loss = model.eval_on(
     corpus.train.iter_epoch(eval_batch_size, evaluation=True))
 valid_loss = model.eval_on(

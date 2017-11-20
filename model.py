@@ -21,7 +21,7 @@ def get_rnn(rnn_type, ninputs, nhid, nlayers, dropout=0, bidirectional=False):
 class Encoder(nn.Module):
     """Encodes text x of style y into content vector z"""
     def __init__(self, nhid, embeddings, rnn_type='LSTM',
-                 nlayers=1, dropout=0.2):
+                 nlayers=1, dropout=0.5):
         super(Encoder, self).__init__()
 
         self.embeddings = embeddings
@@ -65,7 +65,7 @@ class Encoder(nn.Module):
 class Generator(nn.Module):
     """Generates text x based on content z and style y"""
     def __init__(self, nhid, embeddings, eos_id, gamma=0.001, 
-                 rnn_type='LSTM', nlayers=1, dropout=0.2):
+                 rnn_type='LSTM', nlayers=1, dropout=0.5):
         super(Generator, self).__init__()
         
         self.embeddings = embeddings
@@ -128,7 +128,7 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     def __init__(self, dim, filter_sizes, n_filters, 
-            activation=nn.LeakyReLU(), dropout=0.2):
+            activation=nn.LeakyReLU(), dropout=0.5):
         super(Discriminator, self).__init__()
         
         self.activation = activation
