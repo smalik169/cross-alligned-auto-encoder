@@ -194,6 +194,10 @@ class Wrapper(object):
         self.class1 = SubsetBySentence(
                 dictionary, path + '.1', cuda, rng=rng)
 
+    def get_num_batches(self, bsz):
+        return min(self.class0.get_num_batches(bsz),
+                self.class1.get_num_batches(bsz))
+
     def iter_epoch(self, bsz, evaluation=False):
         return itertools.imap(zip, 
                 self.class0.iter_epoch(bsz=bsz, evaluation=evaluation),

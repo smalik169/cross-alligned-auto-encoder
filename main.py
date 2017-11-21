@@ -49,6 +49,8 @@ parser.add_argument('--log_weights', action='store_true',
                     help="log weights' histograms")
 parser.add_argument('--log_grads', action='store_true',
                     help="log gradients' histograms")
+parser.add_argument('--load-model', action='store_true',
+                    help='loads pretrained model')
 
 
 args = parser.parse_args()
@@ -67,7 +69,7 @@ if torch.cuda.is_available():
 ###############################################################################
 corpus = data.Corpus(args.data, cuda=args.cuda, rng=args.seed)
 
-eval_batch_size = 10
+eval_batch_size = 20
 ###############################################################################
 # Build the model
 ###############################################################################
@@ -116,6 +118,25 @@ discriminator_optimizer = optimizer_proto[args.optimizer](
         (param for D in model.discriminator for param in D.parameters()),
         **optimizer_kwargs)
 
+
+def save_model():
+    with open("./model_ae.pt", 'wb') as f:
+        torch.save(model.state_dict(), f)
+    with open("./model_adv0.pt", 'wb') as f:
+        torch.save(model.discriminator[0].state_dict(), f)
+    with open("./model_adv1.pt", 'wb') as f:
+        torch.save(model.discriminator[1].state_dict(), f)
+
+
+def load_model():
+    with open("./model_ae.pt", 'rb') as f:
+        model.load_state_dict(torch.load(f))
+    with open("./model_adv0.pt", 'rb') as f:
+        model.discriminator[0].load_state_dict(torch.load(f))
+    with open("./model_adv1.pt", 'rb') as f:
+        model.discriminator[1].load_state_dict(torch.load(f))
+
+
 ###############################################################################
 # Training code
 ###############################################################################
@@ -128,16 +149,18 @@ def optimizer_step(rec_loss, adv_loss0, adv_loss1):
     # RNNs / LSTMs.
     ae_optimizer.zero_grad()
     (rec_loss - model.lmb * (adv_loss0 + adv_loss1)).backward(retain_graph=True)
-#    torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+    #torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
     ae_optimizer.step()
     
-    discriminator_optimizer.zero_grad()
-    (adv_loss0 + adv_loss1).backward()
-#    torch.nn.utils.clip_grad_norm(
-#            (param for D in model.discriminator for param in D.parameters()), 
-#            args.clip)
-    discriminator_optimizer.step()
+#    discriminator_optimizer.zero_grad()
+#    (adv_loss0 + adv_loss1).backward()
+    #torch.nn.utils.clip_grad_norm(
+    #        (param for D in model.discriminator for param in D.parameters()), 
+    #        args.clip)
+#    discriminator_optimizer.step()
 
+if args.load_model: # resume training
+    load_model()
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
@@ -152,13 +175,7 @@ try:
                 eval_batch_size, evaluation=True))
         # Save the model if the validation loss is the best we've seen so far.
         if not best_val_loss or val_loss['total_ae_loss'] < best_val_loss:
-            with open("./model_ae.pt", 'wb') as f:
-                torch.save(model.state_dict(), f)
-            with open("./model_adv0.pt", 'wb') as f:
-                torch.save(model.discriminator[0].state_dict(), f)
-            with open("./model_adv1.pt", 'wb') as f:
-                torch.save(model.discriminator[1].state_dict(), f)
-            
+            save_model() 
             #logger.save_model_state_dict(model.state_dict())
             #logger.save_model(model)
             best_val_loss = val_loss['total_ae_loss']
@@ -178,12 +195,7 @@ except KeyboardInterrupt:
 #model = logger.load_model()
 #model.load_state_dict(logger.load_model_state_dict())
 
-with open("./model_ae.pt", 'wb') as f:
-    model.load_state_dict(torch.load(f))
-with open("./model_adv0.pt", 'wb') as f:
-    model.discriminator[0].load_state_dict(torch.load(f))
-with open("./model_adv1.pt", 'wb') as f:
-    model.discriminator[1].load_state_dict(torch.load(f))
+load_model()
 
 # Run on all data
 train_loss = model.eval_on(

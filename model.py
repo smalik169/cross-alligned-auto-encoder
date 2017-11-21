@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import numpy as np
 
 
 def get_rnn(rnn_type, ninputs, nhid, nlayers, dropout=0, bidirectional=False):
@@ -89,14 +90,6 @@ class Generator(nn.Module):
         if teacher_forcing:
             emb = self.drop(self.embeddings(data))
             outputs, hidden = self.rnn(emb, hidden)
-            outputs = self.drop(outputs)
-            decoded = self.projection(
-                outputs.view(outputs.size(0) * outputs.size(1), outputs.size(2)))
-            decoded = decoded.view(
-                outputs.size(0), outputs.size(1), decoded.size(1))
-            
-            return decoded, outputs, hidden
-        
         else: # sampling
             outputs = []
             max_len, batch_size = data.size()
@@ -115,7 +108,16 @@ class Generator(nn.Module):
                         self.softmax(decoded/self.gamma), self.embeddings.weight)
                 emb = emb.view([1, batch_size, self.embeddings.embedding_dim])
 
-            return torch.cat(outputs, 0), hidden
+            outputs = torch.cat(outputs, 0)
+        
+        
+        outputs = self.drop(outputs)
+        decoded = self.projection(
+            outputs.view(outputs.size(0) * outputs.size(1), outputs.size(2)))
+        decoded = decoded.view(
+            outputs.size(0), outputs.size(1), decoded.size(1))
+
+        return decoded, outputs, hidden
 
     def split_initial_hidden(self, initial_hidden):
         initial_hidden = initial_hidden.view(
@@ -138,7 +140,7 @@ class Discriminator(nn.Module):
 
         for i, f_size in enumerate(filter_sizes):
             setattr(self, "convolution%d" % i, 
-                    nn.Conv2d(1, n_filters, [f_size, dim]))
+                    nn.Conv2d(1, n_filters, [f_size, dim], padding=(2, 0)))
         
     def forward(self, data):
         data = data.transpose(0, 1).unsqueeze(1)
@@ -189,7 +191,7 @@ class Model(nn.Module):
                 ]
         
         self.rec_criterion = nn.CrossEntropyLoss(
-                ignore_index=-1)
+                size_average=False, ignore_index=-1)
         self.adv_criterion = nn.BCEWithLogitsLoss()
 
     def get_style_encoding(self, style_id, data):
@@ -200,7 +202,7 @@ class Model(nn.Module):
 
         return style
 
-    def compute_losses(self, data, targets, seq_lens):
+    def compute_losses(self, data, targets, seq_lens, ae_only=False):
         assert (data[0].size(1) == data[1].size(1))
         
         batch_size = data[0].size(1)
@@ -208,10 +210,10 @@ class Model(nn.Module):
         style = [self.get_style_encoding(0, data[0]),
                 self.get_style_encoding(1, data[1])]
         
-        labels = [ 
-            Variable(data[0].data.new([0])).expand([batch_size]).float(),
-            Variable(data[1].data.new([1])).expand([batch_size]).float()
-            ]
+#        labels = [ 
+#            Variable(data[0].data.new([0])).expand([batch_size]).float(),
+#            Variable(data[1].data.new([1])).expand([batch_size]).float()
+#            ]
 
         rec_loss = 0.0
         adv_loss = [0.0, 0.0]
@@ -228,26 +230,25 @@ class Model(nn.Module):
             output, hiddens_true, _ = self.generator(
                     generator_init_true, data[p], teacher_forcing=True)
             
-            generator_init_false = self.generator_init_projection(
-                    torch.cat([style[q], content], 1))
-            generator_init_false = self.generator.split_initial_hidden(
-                    generator_init_false)
-            hiddens_false, _ = self.generator(
-                    generator_init_false, data[p], teacher_forcing=False)
-
+#            generator_init_false = self.generator_init_projection(
+#                    torch.cat([style[q], content], 1))
+#            generator_init_false = self.generator.split_initial_hidden(
+#                    generator_init_false)
+#            _, hiddens_false, _ = self.generator(
+#                    generator_init_false, data[p], teacher_forcing=False)
+#
             output_flat = output.view(-1, output.size(-1))
             targets_flat = targets[p].view(-1)
             
-            
             rec_loss += self.rec_criterion(output_flat, targets_flat)
-
-            adv_loss[p] += self.adv_criterion(
-                    self.discriminator[p](hiddens_true),
-                    labels[1])
-
-            adv_loss[q] += self.adv_criterion(
-                    self.discriminator[q](hiddens_false),
-                    labels[0])
+#
+#            adv_loss[p] += self.adv_criterion(
+#                    self.discriminator[p](hiddens_true),
+#                    labels[1])
+#
+#            adv_loss[q] += self.adv_criterion(
+#                    self.discriminator[q](hiddens_false),
+#                    labels[0])
 
         return rec_loss, adv_loss[0], adv_loss[1]
 
@@ -260,21 +261,28 @@ class Model(nn.Module):
         total_rec = 0.0
         total_adv0 = 0.0
         total_adv1 = 0.0
+        total_words = 0.0
         for batch_no, (data, targets, seq_lens) in enumerate(batch_iterator):
             rec, adv0, adv1 = self.compute_losses(data, targets, seq_lens)
-            batch_size = data[0].size()[1]
-            total_rec += batch_size * rec.data[0]
-            total_adv0 += adv0.data[0]
-            total_adv1 += adv1.data[0]
+            total_words += sum(
+                (t.view(-1) != self.rec_criterion.ignore_index).float().sum()
+                for t in targets).data[0]
+            
+            total_rec += rec.data[0]
+            total_adv0 += adv0.data[0] if type(adv0) is Variable else adv0
+            total_adv1 += adv1.data[0] if type(adv1) is Variable else adv1
 
 
-        total_rec /= (batch_no + 1.0)
+        total_rec /= total_words
         total_adv0 /= (batch_no + 1.0)
         total_adv1 /= (batch_no + 1.0)
-
-        print ("batch %d: rec_loss: %f, ae_loss: %f, adv0: %f, adv1: %f" % 
-                (total_rec, total_rec - self.lmb * (total_adv0 + total_adv1), 
+        
+        print (90 * '#')
+        print ("End of epoch: pplx: %f, rec_loss: %f, ae_loss: %f, adv0: %f, adv1: %f" % 
+                (np.exp(total_rec), total_rec, 
+                    total_rec - self.lmb * (total_adv0 + total_adv1), 
                 total_adv0, total_adv1))
+        print (90 * '#')
 
         return {'total_ae_loss': 
                 total_rec - self.lmb * (total_adv0 + total_adv1),
@@ -289,12 +297,21 @@ class Model(nn.Module):
             d.train()
         for batch_no, (data, targets, seq_lens) in enumerate(batch_iterator):
             rec, adv0, adv1 = self.compute_losses(data, targets, seq_lens)
+            batch_words = sum(
+                (t.view(-1) != self.rec_criterion.ignore_index).float().sum()
+                for t in targets).data[0]
+            
+            rec /= batch_words
             optimizer_step(rec, adv0, adv1)
 
-            if batch_no % 500 == 0:
-                print ("batch %d: rec_loss: %f, ae_loss: %f, adv0: %f, adv1: %f" % 
-                        (batch_no, rec.data[0], 
-                            (rec - self.lmb * (adv0 + adv1)).data[0], 
-                            adv0.data[0], adv1.data[0]))
+            rec = rec.data[0]
+            adv0 = adv0.data[0] if type(adv0) is Variable else adv0
+            adv1 = adv1.data[0] if type(adv1) is Variable else adv1
+
+            if batch_no % 250 == 0:
+                print ("batch %d: pplx: %f, rec_loss: %f, ae_loss: %f, adv0: %f, adv1: %f" % 
+                        (batch_no, np.exp(rec), rec, 
+                            (rec - self.lmb * (adv0 + adv1)), 
+                            adv0, adv1))
 
 
