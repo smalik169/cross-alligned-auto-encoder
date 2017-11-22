@@ -110,7 +110,6 @@ class Generator(nn.Module):
 
             outputs = torch.cat(outputs, 0)
         
-        
         outputs = self.drop(outputs)
         decoded = self.projection(
             outputs.view(outputs.size(0) * outputs.size(1), outputs.size(2)))
@@ -136,17 +135,17 @@ class Discriminator(nn.Module):
         self.activation = activation
         self.drop = nn.Dropout(dropout)
         self.projection = nn.Linear(len(filter_sizes)*n_filters, 1)
-        self.conv_num = len(filter_sizes)
+        
+        convolutions = []
+        for f_size in filter_sizes:
+            convolutions.append(nn.Conv2d(1, n_filters, [f_size, dim], padding=(2, 0)))
 
-        for i, f_size in enumerate(filter_sizes):
-            setattr(self, "convolution%d" % i, 
-                    nn.Conv2d(1, n_filters, [f_size, dim], padding=(2, 0)))
+        self.convolutions = nn.ModuleList(convolutions)
         
     def forward(self, data):
         data = data.transpose(0, 1).unsqueeze(1)
         outputs = []
-        for i in range(self.conv_num):
-            conv = getattr(self, "convolution%d" % i)
+        for conv in self.convolutions:
             hid = self.activation(conv(data))
             # maxpool over time:
             # Note that torch.max over a dimension 
@@ -184,11 +183,11 @@ class Model(nn.Module):
                 style_dim+encoder_kwargs["nhid"], 
                 self.generator.initial_state_dim)
         
-        self.discriminator = [
+        self.discriminator = nn.ModuleList([
                 Discriminator(dim=generator_kwargs['nhid'], 
                     **discriminator_kwargs)
                 for i in range(2)
-                ]
+                ])
         
         self.rec_criterion = nn.CrossEntropyLoss(
                 size_average=False, ignore_index=-1)
@@ -202,7 +201,14 @@ class Model(nn.Module):
 
         return style
 
-    def compute_losses(self, data, targets, seq_lens, ae_only=False):
+    def mask_invalid_hiddens(self, hiddens, seq_lens):
+        arange = seq_lens.data.new(hiddens.size(0)).copy_(
+                torch.arange(0, hiddens.size(0)))
+        arange = Variable(arange)
+        mask = (arange.view([-1, 1]) < seq_lens).float().unsqueeze(2)
+        return hiddens * mask
+
+    def compute_losses(self, data, targets, seq_lens):
         assert (data[0].size(1) == data[1].size(1))
         
         batch_size = data[0].size(1)
@@ -210,10 +216,10 @@ class Model(nn.Module):
         style = [self.get_style_encoding(0, data[0]),
                 self.get_style_encoding(1, data[1])]
         
-#        labels = [ 
-#            Variable(data[0].data.new([0])).expand([batch_size]).float(),
-#            Variable(data[1].data.new([1])).expand([batch_size]).float()
-#            ]
+        labels = [ 
+            Variable(data[0].data.new([0])).expand([batch_size]).float(),
+            Variable(data[1].data.new([1])).expand([batch_size]).float()
+            ]
 
         rec_loss = 0.0
         adv_loss = [0.0, 0.0]
@@ -230,25 +236,31 @@ class Model(nn.Module):
             output, hiddens_true, _ = self.generator(
                     generator_init_true, data[p], teacher_forcing=True)
             
-#            generator_init_false = self.generator_init_projection(
-#                    torch.cat([style[q], content], 1))
-#            generator_init_false = self.generator.split_initial_hidden(
-#                    generator_init_false)
-#            _, hiddens_false, _ = self.generator(
-#                    generator_init_false, data[p], teacher_forcing=False)
-#
+            generator_init_false = self.generator_init_projection(
+                    torch.cat([style[q], content], 1))
+            generator_init_false = self.generator.split_initial_hidden(
+                    generator_init_false)
+            _, hiddens_false, _ = self.generator(
+                    generator_init_false, data[p], teacher_forcing=False)
+
             output_flat = output.view(-1, output.size(-1))
             targets_flat = targets[p].view(-1)
             
             rec_loss += self.rec_criterion(output_flat, targets_flat)
-#
-#            adv_loss[p] += self.adv_criterion(
-#                    self.discriminator[p](hiddens_true),
-#                    labels[1])
-#
-#            adv_loss[q] += self.adv_criterion(
-#                    self.discriminator[q](hiddens_false),
-#                    labels[0])
+            
+            
+            hiddens_true = self.mask_invalid_hiddens(
+                    hiddens_true, seq_lens[p])
+            hiddens_false = self.mask_invalid_hiddens(
+                    hiddens_false, seq_lens[p])
+
+            adv_loss[p] += self.adv_criterion(
+                    self.discriminator[p](hiddens_true),
+                    labels[1])
+
+            adv_loss[q] += self.adv_criterion(
+                    self.discriminator[q](hiddens_false),
+                    labels[0])
 
         return rec_loss, adv_loss[0], adv_loss[1]
 
@@ -256,8 +268,7 @@ class Model(nn.Module):
     def eval_on(self, batch_iterator):
         # Turn on evaluation mode which disables dropout.
         self.eval()
-        for d in self.discriminator:
-            d.eval()
+        
         total_rec = 0.0
         total_adv0 = 0.0
         total_adv1 = 0.0
@@ -293,8 +304,7 @@ class Model(nn.Module):
     def train_on(self, batch_iterator, optimizer_step):
         # Turn on training mode which enables dropout.
         self.train()
-        for d in self.discriminator:
-            d.train()
+        
         for batch_no, (data, targets, seq_lens) in enumerate(batch_iterator):
             rec, adv0, adv1 = self.compute_losses(data, targets, seq_lens)
             batch_words = sum(

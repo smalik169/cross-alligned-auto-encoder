@@ -111,30 +111,24 @@ optimizer_kwargs = eval("dict(%s)" % args.optimizer_kwargs)
 optimizer_kwargs['lr'] = args.lr
 
 ae_optimizer = optimizer_proto[args.optimizer](
-    model.parameters(), **optimizer_kwargs) 
+        (param for name, param in model.named_parameters() 
+            if name.split('.')[0] != 'discriminator'), 
+        **optimizer_kwargs) 
 # note that above won't update discriminators, as they are 'hidden' in a list
 
 discriminator_optimizer = optimizer_proto[args.optimizer](
-        (param for D in model.discriminator for param in D.parameters()),
+        model.discriminator.parameters(),
         **optimizer_kwargs)
 
 
 def save_model():
-    with open("./model_ae.pt", 'wb') as f:
+    with open("./model.pt", 'wb') as f:
         torch.save(model.state_dict(), f)
-    with open("./model_adv0.pt", 'wb') as f:
-        torch.save(model.discriminator[0].state_dict(), f)
-    with open("./model_adv1.pt", 'wb') as f:
-        torch.save(model.discriminator[1].state_dict(), f)
 
 
 def load_model():
-    with open("./model_ae.pt", 'rb') as f:
+    with open("./model.pt", 'rb') as f:
         model.load_state_dict(torch.load(f))
-    with open("./model_adv0.pt", 'rb') as f:
-        model.discriminator[0].load_state_dict(torch.load(f))
-    with open("./model_adv1.pt", 'rb') as f:
-        model.discriminator[1].load_state_dict(torch.load(f))
 
 
 ###############################################################################
@@ -145,19 +139,27 @@ best_val_loss = None
 
 
 def optimizer_step(rec_loss, adv_loss0, adv_loss1):
+    ae_optimizer.zero_grad()
+    discriminator_optimizer.zero_grad()
+
+    if adv_loss0.data[0] < 1.0 and adv_loss1.data[0] < 1.0: 
+        ae_loss = rec_loss - model.lmb * (adv_loss0 + adv_loss1)
+    else:
+        ae_loss = rec_loss
+    
+    ae_loss.backward(retain_graph=True)
     # `clip_grad_norm` helps prevent the exploding gradient problem in
     # RNNs / LSTMs.
-    ae_optimizer.zero_grad()
-    (rec_loss - model.lmb * (adv_loss0 + adv_loss1)).backward(retain_graph=True)
     #torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
     ae_optimizer.step()
     
-#    discriminator_optimizer.zero_grad()
-#    (adv_loss0 + adv_loss1).backward()
+    discriminator_optimizer.zero_grad()
+    (adv_loss0 + adv_loss1).backward()
     #torch.nn.utils.clip_grad_norm(
     #        (param for D in model.discriminator for param in D.parameters()), 
     #        args.clip)
-#    discriminator_optimizer.step()
+    discriminator_optimizer.step()
+
 
 if args.load_model: # resume training
     load_model()
