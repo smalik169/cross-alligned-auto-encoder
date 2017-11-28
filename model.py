@@ -29,7 +29,6 @@ class Encoder(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.rnn = get_rnn(rnn_type, self.embeddings.embedding_dim, 
                            nhid, nlayers, dropout)
-        #self.projection = nn.Linear(nhid, dim)
         
         self.rnn_type = rnn_type
         self.nhid = nhid
@@ -48,10 +47,8 @@ class Encoder(nn.Module):
         _, batch_size, hidden_dim = output.size()
         arange = seq_lens.data.new(*seq_lens.size()).copy_(
                 torch.arange(0, batch_size))
+        
         last_states = output[seq_lens.data - 1, arange]
-       
-        last_states = self.drop(last_states)
-        #output = self.projection(last_states)
         return last_states
 
     def split_initial_hidden(self, initial_hidden):
@@ -84,7 +81,7 @@ class Generator(nn.Module):
         if rnn_type == 'LSTM':
             self.initial_state_dim *= 2
 
-    def forward(self, init_hidden, data, teacher_forcing):
+    def forward(self, init_hidden, data, teacher_forcing=True):
         hidden = init_hidden
         
         if teacher_forcing:
@@ -98,6 +95,7 @@ class Generator(nn.Module):
                     [1, batch_size, self.embeddings.embedding_dim])
 
             for step in range(max_len):
+                emb = self.drop(emb)
                 output, hidden = self.rnn(emb, hidden)
                 outputs.append(output)
 
@@ -144,6 +142,7 @@ class Discriminator(nn.Module):
         
     def forward(self, data):
         data = data.transpose(0, 1).unsqueeze(1)
+        data = self.drop(data)
         outputs = []
         for conv in self.convolutions:
             hid = self.activation(conv(data))
@@ -160,7 +159,8 @@ class Discriminator(nn.Module):
 class Model(nn.Module):
     def __init__(self, ntokens, style_dim,
                  encoder_kwargs, generator_kwargs, 
-                 discriminator_kwargs, lmb=1.0, tie_embeddings=True):
+                 discriminator_kwargs, dropout=0.5,
+                 lmb=1.0, tie_embeddings=True):
         super(Model, self).__init__()
         
         generator_embeddings = nn.Embedding(ntokens, generator_kwargs["nhid"])
@@ -173,6 +173,7 @@ class Model(nn.Module):
             encoder_embeddings = nn.Embedding(ntokens, encoder_kwargs["nhid"])
 
         self.lmb = lmb
+        self.drop = nn.Dropout(dropout)
         self.style_encoder = nn.Embedding(2, style_dim)
         self.generator = Generator(embeddings=generator_embeddings, **generator_kwargs)
         self.encoder = Encoder(embeddings=encoder_embeddings, **encoder_kwargs)
@@ -208,6 +209,46 @@ class Model(nn.Module):
         mask = (arange.view([-1, 1]) < seq_lens).float().unsqueeze(2)
         return hiddens * mask
 
+    def transfer_style(self, data, in_style, out_style):
+        assert data.size()[1:] == torch.Size([1])
+        self.eval()
+
+        in_style = self.get_style_encoding(in_style, data)
+        out_style = self.get_style_encoding(out_style, data)
+        
+        encoder_init = self.encoder.split_initial_hidden(
+                self.encoder_init_projection(in_style))
+
+        emb = self.encoder.embeddings(data)
+        output, _ = self.encoder.rnn(emb, encoder_init)
+        content = output[-1]
+
+        generator_init = self.generator_init_projection(
+                torch.cat([out_style, content], 1))
+        generator_init = self.generator.split_initial_hidden(
+                generator_init)
+
+        transferred = []
+        hidden = generator_init
+        eos = Variable(data.data.new([self.generator.eos]))
+        emb = self.generator.embeddings(eos).expand(
+                [1, 1, self.generator.embeddings.embedding_dim])
+
+        for step in range(80):
+            output, hidden = self.generator.rnn(emb, hidden)
+
+            decoded = self.generator.projection(
+                    output.view([-1, output.size(2)])).max(-1)[1]
+            
+            transferred.append(decoded.data[0])
+            if transferred[-1] == self.generator.eos:
+                break
+            
+            emb = self.generator.embeddings(decoded)
+            emb = emb.view([1, 1, self.generator.embeddings.embedding_dim])
+
+        return transferred
+
     def compute_losses(self, data, targets, seq_lens):
         assert (data[0].size(1) == data[1].size(1))
         
@@ -225,19 +266,19 @@ class Model(nn.Module):
         adv_loss = [0.0, 0.0]
 
         for (p, q) in [(0,1), (1,0)]:
-            encoder_init = self.encoder_init_projection(style[p])
+            encoder_init = self.encoder_init_projection(self.drop(style[p]))
             encoder_init = self.encoder.split_initial_hidden(encoder_init)
             content = self.encoder(encoder_init, data[p], seq_lens[p])
 
             generator_init_true = self.generator_init_projection(
-                    torch.cat([style[p], content], 1))
+                    self.drop(torch.cat([style[p], content], 1)))
             generator_init_true = self.generator.split_initial_hidden(
                     generator_init_true)
             output, hiddens_true, _ = self.generator(
                     generator_init_true, data[p], teacher_forcing=True)
             
             generator_init_false = self.generator_init_projection(
-                    torch.cat([style[q], content], 1))
+                    self.drop(torch.cat([style[q], content], 1)))
             generator_init_false = self.generator.split_initial_hidden(
                     generator_init_false)
             _, hiddens_false, _ = self.generator(

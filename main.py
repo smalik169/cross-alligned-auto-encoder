@@ -101,9 +101,6 @@ print("Model params:\n%s" % ("\n".join(
 
 if args.cuda:
     model.cuda()
-    model.discriminator[0].cuda()
-    model.discriminator[1].cuda()
-
 
 optimizer_proto = {'sgd': optim.SGD, 'adam': optim.Adam,
                    'adagrad': optim.Adagrad, 'adadelta': optim.Adadelta}
@@ -116,6 +113,7 @@ ae_optimizer = optimizer_proto[args.optimizer](
         **optimizer_kwargs) 
 # note that above won't update discriminators, as they are 'hidden' in a list
 
+optimizer_kwargs['lr'] = 100.0 * args.lr
 discriminator_optimizer = optimizer_proto[args.optimizer](
         model.discriminator.parameters(),
         **optimizer_kwargs)
@@ -139,10 +137,9 @@ best_val_loss = None
 
 
 def optimizer_step(rec_loss, adv_loss0, adv_loss1):
-    ae_optimizer.zero_grad()
-    discriminator_optimizer.zero_grad()
+    model.zero_grad()
 
-    if adv_loss0.data[0] < 1.0 and adv_loss1.data[0] < 1.0: 
+    if adv_loss0.data[0] < 0.9 and adv_loss1.data[0] < 0.9: 
         ae_loss = rec_loss - model.lmb * (adv_loss0 + adv_loss1)
     else:
         ae_loss = rec_loss
@@ -150,14 +147,12 @@ def optimizer_step(rec_loss, adv_loss0, adv_loss1):
     ae_loss.backward(retain_graph=True)
     # `clip_grad_norm` helps prevent the exploding gradient problem in
     # RNNs / LSTMs.
-    #torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+    torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
     ae_optimizer.step()
     
-    discriminator_optimizer.zero_grad()
+    model.zero_grad()
     (adv_loss0 + adv_loss1).backward()
-    #torch.nn.utils.clip_grad_norm(
-    #        (param for D in model.discriminator for param in D.parameters()), 
-    #        args.clip)
+    torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
     discriminator_optimizer.step()
 
 
@@ -182,10 +177,10 @@ try:
             #logger.save_model(model)
             best_val_loss = val_loss['total_ae_loss']
         else:
-            continue
             # Anneal the learning rate if no improvement has been seen on
             # the validation dataset.
             if args.lr_decay:
+                continue
                 assert len(optimizer.param_groups) == 1
                 optimizer.param_groups[0]['lr'] /= args.lr_decay
 #                logger.lr = optimizer.param_groups[0]['lr']
