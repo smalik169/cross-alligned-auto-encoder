@@ -9,6 +9,9 @@ from torch.autograd import Variable
 import data
 import model
 
+from nltk import word_tokenize
+import numpy as np
+
 #parser = argparse.ArgumentParser(description='Language style transfer Beam search')
 #parser.add_argument('--seed', type=int, default=1111,
 #                    help='random seed')
@@ -168,32 +171,74 @@ class Beam(object):
 
 class TransferStyle(object):
     """Samples from the model."""
-    def __init__(self, dictionary, model, beam_size=10, n_best=10):#, cuda=False):
+    def __init__(self, dictionary, model, beam_size=10, n_best=10, cuda=False):
         self.dictionary = dictionary
         self.model = model
         self.beam_size = beam_size
         self.n_best = n_best
-        #self.tt = torch.cuda if cuda else torch
-    
-    def __call__(self, data, in_style, out_style):
-        in_style = self.model.get_style_encoding(in_style, data)
-        out_style = self.model.get_style_encoding(out_style, data)
-        return self._transfer(data, in_style, out_style)
+        self.tt = torch.cuda if cuda else torch
 
-    def _transfer(self, data, in_style, out_style, max_sent_len=80):
+    def __call__(self, data, in_style, out_style, seq_lens=None):
+        in_style = in_style if isinstance(in_style, list) else [in_style]
+        in_style = self.model.style_encoder(
+                Variable(self.tt.LongTensor(in_style)))
+
+        out_style = out_style if isinstance(out_style, list) else [out_style]
+        out_style = self.model.style_encoder(
+                Variable(self.tt.LongTensor(out_style)))
+
+        if not isinstance(data, Variable):
+            data = data if isinstance(data, list) else [data]
+            data, seq_lens = self._preprocess(data)
+
+        assert(seq_lens is not None)
+
+        return self._transfer(data, in_style, out_style, seq_lens)
+
+    def _preprocess(self, sentences):
+        data = []
+        unk_id = self.dictionary.unk_id
+        for sent in sentences:
+            tokens = word_tokenize(sent)
+            data.append(np.array([
+                self.dictionary.word2idx[token]
+                if token in self.dictionary.word2idx
+                else unk_id
+                for token in tokens]))
+
+        seq_lens = np.array([sent.shape[0]+2 for sent in data])
+        seq_lens_idx = np.argsort(-seq_lens)
+        seq_lens = seq_lens[seq_lens_idx]
+
+        padded_data = np.zeros(
+            (len(data), seq_lens[0]), dtype='int64')
+        padded_data = padded_data + self.dictionary.eos_id
+        for i, sent in enumerate(data):
+            padded_data[i, 1:sent.shape[0]+1] = sent
+        padded_data[:, 0] = self.dictionary.bos_id
+        padded_data = padded_data[seq_lens_idx]
+
+        batch = self.tt.from_numpy(padded_data.T).contiguous()
+        batch = Variable(batch)
+        seq_lens = Variable(self.tt.from_numpy(seq_lens))
+        return batch, seq_lens
+
+
+    def _transfer(self, data, in_style, out_style, seq_lens, max_sent_len=80):
         encoder_init = self.model.encoder.split_initial_hidden(
                 self.model.encoder_init_projection(in_style))
 
-        emb = self.model.encoder.embeddings(data)
-        encoder_output, _ = self.model.encoder.rnn(emb, encoder_init)
-        content = encoder_output[-1]
+#        emb = self.model.encoder.embeddings(data)
+#        encoder_output, _ = self.model.encoder.rnn(emb, encoder_init)
+#        content = encoder_output[-1]
+        content = self.model.encoder(encoder_init, data, seq_lens)
 
         generator_init = self.model.generator_init_projection(
                 torch.cat([out_style, content], 1))
         generator_init = self.model.generator.split_initial_hidden(
                 generator_init)
         hidden = generator_init
-        
+
         batch_size = data.size(1)
         bos = data.data.new([[self.dictionary.bos_id]*self.beam_size])
         beams = [Beam(self.beam_size, self.dictionary,

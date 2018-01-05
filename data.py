@@ -134,7 +134,7 @@ class SubsetBySentence():
         raw_data = np.split(raw_data, np.where(raw_data == self.eos_id)[0] + 1)
         last = raw_data.pop()
         assert last.shape[0] == 0
-        # Add 1 to sentence length because we want to hav both an eos
+        # Add 1 to sentence length because we want to have both an eos
         # at the beginning and at the end.
         max_sentence_len = max(sent.shape[0] for sent in raw_data) + 1
         padded_data = np.zeros(
